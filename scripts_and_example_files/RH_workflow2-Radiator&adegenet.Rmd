@@ -1,0 +1,297 @@
+---
+title: "RiverHerring_prelim_analyses"
+author: "Lisa Komoroske"
+date: "2/24/2020"
+output: pdf_document
+---
+## Upstream data processing summary:
+
+**I. Filtering outside of R**
+ a.	Filtered using stacks populations
+   i.	-r 80: I went back to this when it became clear there was a lot of missing data
+       in some individuals
+   ii. Whitelisted loci based on HDplot paralog filtering done by John
+ b.	 Filtered output from a. using vcftools
+   i.	Biallelic only
+   ii.	Min-mean DP: 20
+   iii.	Maf
+    1.	Highfilter: 0.3
+     2.	Normal filter: 0.05
+   iv.	Max-missing
+    1.	Highfilter: 0.2
+    2.	Normal filter: 0.5
+
+**II. Here presenting output with this upstream filtering scheme:**
+ - r80
+ - paralog filtered in HDplot
+ - biallelic only
+ - min-meanDP 20
+ - maf 0.2
+ - max-missing 0.2
+
+ **III. Input file:**
+ *denovo_m3_M3_n3_singletons_r80_HF.recode.vcf*
+ - this file was generated from the entire denovo pipeline run without 3 divergent indvs or high missing data indvs
+ - Includes 2831 SNPs to start (across XX loci?)
+
+##########################################
+##Workflow 2: radiator to adegenet/strataG
+
+###I. Setup:
+```{r setup, include=FALSE}
+setwd("~/Box/MEC_LAB_DOCS/MEC lab Projects/River_herring/prelim denovo results/LMK R work")
+input_vcf<-("~/Box/MEC_LAB_DOCS/MEC lab Projects/River_herring/prelim denovo results/23Sep2019results/denovoM_m3_M3_n3_singletons_r80_HF.recode.vcf")
+input_strata<-("RH_strata_LMK.tsv")
+
+# make sure you have Rtools installed
+#if (!require("devtools")) install.packages("devtools")
+
+# install latest versions of required packages from GitHub, etc. (NB need XCode command line tools installed for some of these)
+#devtools::install_github("thierrygosselin/radiator")
+#devtools::install_github('ericarcher/strataG', build_vignettes = TRUE)
+#devtools::install_github("thibautjombart/adegenet")
+#if (!requireNamespace("BiocManager", quietly=TRUE))
+   # install.packages("BiocManager")
+#BiocManager::install("SNPRelate")
+
+#Load packages (just need all that want to output file types of)
+library(radiator)
+library(SNPRelate)
+library(strataG)
+library(adegenet)
+library(vcfR)
+library(gdata)
+```
+
+###II. Filtering with Radiator
+####Some introductory/backgrounds notes:
+- SLE initially had trouble with radiator when there were samples that were missing high proportions of data. Removal of these small # of individuals seems to have resolved the issue, but something to be aware of when using with future datasets. See input files details above for which files were removed upstream and how.
+- Note that Thierry Gosselin seems to be actively updating radiator; we are calling to install the latest version each time but that may mean that periodically things will break and need to be fixed, e.g., if syntax changes
+- Additional explanations and resources for this package are found in the documentation and help files ('??radiator'), and the [Radiator Github](https://github.com/thierrygosselin/radiator)
+
+####Our goals of running radiator are to:
+  1. generate some useful QC statistics for our dataset to better understand our data before doing downstream pop gen analyses
+  2. filter for LD and HWE
+  
+####Define strata (optional):
+```{r, include=FALSE}
+radiator::summary_strata(input_strata)
+# more details in with `??radiator::summary_strata`
+```
+
+####Import vcf and conduct filtering, mostly with default settings:
+```{r, include=TRUE}
+radiator_filtered_M <- filter_rad(
+  data = input_vcf,
+  filter.short.ld = NULL,
+  filter.long.ld = 0.9,
+  filter.hwe = FALSE,
+  output = c("vcf","genind","genlight","plink","genepop","gtypes"),
+  strata = input_strata,
+  filename = "radiator_filtered_M",
+  interactive.filter = FALSE,
+  verbose = TRUE)
+```  
+
+Note: not filtering based on HWE yet, but it is possible to filter using filter_hwe = TRUE and midp.threshold = * to **** in filter_rad() (needs further testing) 
+
+####Useful notes on output files:
+-Radiator writes to several subfolders within the output with a time stamp. Depending on how many filters were turned on, there will be more or less subfolders.
+-See the documentation for 'filter_rad' for complete descriptions of file outputs, etc.
+-The first subfolder 'radiator' contains files documenting the parameters used and the overall summary (how many loci/markers started with, how many were then blacklisted for each filter, etc.). It also contains QC info prior to any filtering (from what I can tell) for individuals and markers, in raw, summary and plot forms
+-Each subsequent folder has a whitelist and blacklist (if any were removed) and corresponding QC info
+-The last folder created will be called 'XX_filtered', which contains the final filtered .vcf and other file types requested for downstream analyses (e.g., gtypes, etc.). It also contains whitelist/blacklists and QC files and plots akin to those described above for before the filtering occurred. Good to compare to see how things changed with the filtering applied, and/or across runs where filtering thresholds are altered.
+
+####LK to come back to:
+-Read more and play with LD tweaking ('?filter_ld') to determine best parameters to use
+-Read and insert HWE filter...
+
+###III. Pop gen Analysis of Filtered Data
+
+####Call/Import file types for downstream analyses in adegenet (genlight) and strataG (gtypes)
+```{r, include=TRUE}
+#to call from within the environment (if run filter_rad above):
+g1<-radiator_filtered_M$output$gtypes
+#summary(g1)
+g2<-radiator_filtered_M$output$genlight
+#show(g2)
+g3<-radiator_filtered_M$output$genind
+
+#alternatively, if you have a saved previous file want to read in:
+#gtypes_test<-readRDS("radiator_gtypes_test.Rdata")
+#genlight_test<-readRDS("radiator_genlight_test.Rdata")
+
+#testing converting from one to the other if needed for streamlining downstream;
+test <- radiator::genomic_converter(g2, output = "gtypes")# output is a list with a tidy dataset and your new gtypes object (this one seems to work)
+test1 <- radiator::genomic_converter(g1, output = "genlight")#this one doesn't work-need to check manual, maybe different syntax
+```
+
+####PCA 
+We first run without specifying number of axes. 
+This gives a subplot of eigenvalues, which we can use to decide where the break is for PCs that explain the most variation (and also biologically relevant)
+```{r, include=TRUE}
+pca_M <- glPca(x = g2, center = T, scale = T, nf = 6)# retain first 6 axes
+
+# plot the first 2 PCA axes
+scatter(pca_M, clab = 0.7, posi = "bottomleft") # with all the indvs labeled
+#We can then plot the first 2 PCA axes (without labels)
+scatter(pca_M, xax = 1, yax = 2, clab = 0, pch = 19, posi = "bottomleft")
+# axes 2 and 3
+scatter(pca_M, xax = 2, yax = 3, clab = 0, pch = 19, posi = "bottomleft") 
+# axes 3 and 4
+scatter(pca_M, xax = 3, yax = 4, clab = 0, pch = 19, posi = "topleft")
+
+# proportion of explained variance by first three axes
+pca_M$eig[1]/sum(pca_M$eig) # proportion of variation explained by 1st axis
+pca_M$eig[2]/sum(pca_M$eig) # proportion of variation explained by 2nd axis 
+pca_M$eig[3]/sum(pca_M$eig) # proportion of variation explained by 3rd axis
+```
+
+#Checking Eigenvalues
+```{r, fig.width = 5,fig.height = 5}
+barplot(100*pca_M$eig/sum(pca_M$eig), col = heat.colors(50), main="PCA Eigenvalues")
+title(ylab="Percent of variance\nexplained", line = 2)
+title(xlab="Eigenvalues", line = 1)
+```
+
+Extracting PC scores to color by location/yr:
+(adapted from [Grunwald lab github](https://github.com/grunwaldlab/Population_Genetics_in_R/blob/master/gbs_analysis.Rmd#principal-components-analysis))
+```{r, fig.width = 6,fig.height = 6}
+pca_M.scores <- as.data.frame(pca_M$scores)
+pca_M.scores$pop <- pop(g2)
+library(ggplot2)
+library(RColorBrewer)
+set.seed(9)
+cols <- brewer.pal(n = nPop(g2), name = "Dark2")
+p <- ggplot(pca_M.scores, aes(x=PC1, y=PC2, colour=pop)) 
+p <- p + geom_point(size=2)
+p <- p + stat_ellipse(level = 0.95, size = 1)
+p <- p + scale_color_manual(values = cols) 
+p <- p + geom_hline(yintercept = 0) 
+p <- p + geom_vline(xintercept = 0) 
+p <- p + theme_bw()
+
+pdf("PCA1v2.pdf", width = 8, height=6)
+p
+dev.off()
+```
+
+####Genetic diversity and FST
+*LK stopping here; talk to Sarah about her updating/streamlining this and/or LMK run in strataG*
+```{r, include=TRUE}
+### Pairwise FST ###
+library(dartR)
+
+# all site-year combinations
+popinfo <- read.csv("strata_M.csv")
+popyear <- popinfo$STRATA
+pop(M_genlight) <- popyear
+fst_M_genlight <- gl.fst.pop(M_genlight)
+fst_M_genlight$Fsts
+
+# all sites
+popsite <- popinfo$Loc
+pop(M_genlight) <- popsite
+fst_M_genlight <- gl.fst.pop(M_genlight)
+fst_M_genlight$Fsts
+
+### Genetic diversity ###
+
+library(hierfstat)
+library(poppr)
+
+# GETTING ERROR: Error in sHo/2/n : non-conformable arrays for both basic.stats()
+#   and gl.basic.stats()
+# trying to figure out source of the issue
+# will send updated markdown once I have the diversity metrics
+
+# add all population-year combinations
+popinfo <- read.csv("strata_M.csv")
+popyear <- popinfo$STRATA
+pop(M_genlight_imputed) <- popyear
+
+M_genlight_sep <- seppop(x = M_genlight_imputed)
+
+# Dennis_2004_stat <- gl.basic.stats(M_genlight_sep$Dennis_2004) # get error in .nextMethod
+# EastGrandLake_2004 # haven't tried these others yet
+# EastGrandLake_2018
+# GrandFallsFlowage_2004
+# Milltown_2004
+# Milltown_2018
+# #
+# Dennis_2004_genlight <- popsub(M_genlight, sublist = "Dennis_2004")
+# trying a different way to subset
+# Dennis_2004_stats <- gl.basic.stats(Dennis_2004_genlight) # error that vector
+# length does not match number o loci
+
+# # trying to use by and do all at once
+# stats_allindvs <- by(data = allindvs_genlight, INDICES = stats_allindvs$overall,
+#   gl.basic.stats(allindvs_genlight))
+
+
+# just getting overall stats
+# stats_allindvs <- gl.basic.stats(allindvs_genlight)
+# stats_allindvs$overall
+
+# observed heterozygosity (with sample size)
+gl.report.heterozygosity(M_genlight)
+
+
+library(diveRsity)
+```
+
+
+
+####fastStructure
+```{r, include=TRUE}
+# converted output vcfs from radiator to plink bed with plink
+# ran fastStructure on cluster
+
+#### all indvs ####
+
+# install dependencies and devtools
+# install.packages(c("Cairo","ggplot2","gridExtra","gtable","tidyr","devtools"),dependencies=T)
+
+# install pophelper package from GitHub
+# devtools::install_github('royfrancis/pophelper')
+
+library(pophelper)
+# 
+# 
+# 
+#### high prop M indvs removed ####
+
+info <- read.csv(file="strata_M.csv",stringsAsFactors = TRUE)
+locbyear <- info$STRATA
+grp <- as.data.frame(locbyear)
+grp$locbyear <- as.character(grp$locbyear)
+
+K2 <- readQ(files="./M/radiator_filtered_M_output.2.meanQ", filetype = "basic")
+rownames(K2[[1]])<-info$INDV
+
+K3 <- readQ(files="./M/radiator_filtered_M_output.3.meanQ", filetype = "basic")
+rownames(K3[[1]])<-info$INDIVIDUALS #this should be INDV but better to omit if want to see plot
+
+K4 <- readQ(files="./M/radiator_filtered_M_output.4.meanQ", filetype = "basic")
+rownames(K4[[1]])<-info$INDIVIDUALS
+
+K5 <- readQ(files="./M/radiator_filtered_M_output.5.meanQ", filetype = "basic")
+rownames(K5[[1]])<-info$INDIVIDUALS
+
+K6 <- readQ(files="./M/radiator_filtered_M_output.6.meanQ", filetype = "basic")
+rownames(K6[[1]])<-info$INDIVIDUALS
+
+K7 <- readQ(files="./M/radiator_filtered_M_output.7.meanQ", filetype = "basic") #stopping at 7 for now
+rownames(K7[[1]])<-info$INDIVIDUALS
+
+myCol <- c("red","blue","green","yellow","purple","orange","aquamarine")
+
+
+plotQ(K2, grplab = grp, selgrp = , ordergrp = TRUE, useindlab = TRUE, showindlab = TRUE, indlabsize = 2, panelratio = c(3,2), grplabpos = 0.25, height = 2, width = 12, grplabangle = 20, outputfilename = "./M/K2plot_indvlabels",clustercol = myCol)
+plotQ(K2, grplab = grp, selgrp = , ordergrp = TRUE, useindlab = TRUE, showindlab = FALSE, indlabsize = 2, panelratio = c(3,2), grplabpos = 0.25, height = 2, width = 12, grplabangle = 20, outputfilename = "./M/K2plot",clustercol = myCol)
+plotQ(K3, grplab = grp, selgrp = , ordergrp = TRUE, useindlab = TRUE, showindlab = FALSE, indlabsize = 2, panelratio = c(3,2), grplabpos = 0.25, height = 2, width = 12, grplabangle = 20, outputfilename = "./M/K3plot",clustercol = myCol)
+plotQ(K4, grplab = grp, selgrp = , ordergrp = TRUE, useindlab = TRUE, showindlab = FALSE, indlabsize = 2, panelratio = c(3,2), grplabpos = 0.25, height = 2, width = 12, grplabangle = 20, outputfilename = "./M/K4plot",clustercol = myCol)
+plotQ(K5, grplab = grp, selgrp = , ordergrp = TRUE, useindlab = TRUE, showindlab = FALSE, indlabsize = 2, panelratio = c(3,2), grplabpos = 0.25, height = 2, width = 12, grplabangle = 20, outputfilename = "./M/K5plot",clustercol = myCol)
+plotQ(K6, grplab = grp, selgrp = , ordergrp = TRUE, useindlab = TRUE, showindlab = FALSE, indlabsize = 2, panelratio = c(3,2), grplabpos = 0.25, height = 2, width = 12, grplabangle = 20, outputfilename = "./M/K6plot",clustercol = myCol)
+plotQ(K7, grplab = grp, selgrp = , ordergrp = TRUE, useindlab = TRUE, showindlab = FALSE, indlabsize = 2, panelratio = c(3,2), grplabpos = 0.25, height = 2, width = 12, grplabangle = 20, outputfilename = "./M/K7plot",clustercol = myCol)
+```
