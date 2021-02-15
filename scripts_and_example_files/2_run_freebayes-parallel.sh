@@ -27,18 +27,18 @@ date
 echo $file
 sample=$(basename $file _sortfltr.bam )
 #echo $sample
-java -jar /share/pkg/picard/2.17.8/picard.jar AddOrReplaceReadGroups  I= $file O= "$sample"_RG_sort.bam RGID= $sample RGLB= $sample RGPL=illumina RGPU=unit1 RGSM= $sample
+java -jar /share/pkg/picard/2.17.8/picard.jar AddOrReplaceReadGroups  I= $file O= "$sample"_RG_sortfltr.bam RGID= $sample RGLB= $sample RGPL=illumina RGPU=unit1 RGSM= $sample
 done
 
 #index new bam files
-for file in *RG_sort.bam
+for file in *_RG_sortfltr.bam
 do
 samtools index $file
 done
 
 
 #make new bam file list
-ls *_RG_sort.bam > bamlist.txt
+ls *_RG_sortfltr.bam > bamlist.txt
 
 #make sure your targets.bed file is in the directory you
 freebayes-parallel ./targets.bed 60 -f $reference -L ./bamlist.txt --use-best-n-alleles 7 >all_SPECIES_n7.vcf
